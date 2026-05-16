@@ -4,8 +4,12 @@ import { useEffect, useMemo, useState } from 'react'
 
 import { Button } from '@status-im/status-network/components'
 import Image from 'next/image'
+import { createPublicClient, fallback, http } from 'viem'
+import { mainnet } from 'viem/chains'
+import { getEnsAddress, normalize } from 'viem/ens'
 
 import { HubLayout } from '../../_components/hub-layout'
+import { clientEnv } from '../../_constants/env.client.mjs'
 import airdropData from '../../_data/airdrop.json'
 
 type AirdropRecord = {
@@ -63,6 +67,16 @@ const ethFormatter = new Intl.NumberFormat('en-US', {
   maximumFractionDigits: 6,
 })
 
+const mainnetClient = createPublicClient({
+  chain: mainnet,
+  transport: fallback([
+    http(
+      `${clientEnv.NEXT_PUBLIC_STATUS_API_URL}/api/trpc/rpc.proxy?chainId=${mainnet.id}`
+    ),
+    http('https://eth.merkle.io'),
+  ]),
+})
+
 function shortAddress(address: string) {
   return `${address.slice(0, 6)}...${address.slice(-4)}`
 }
@@ -76,29 +90,16 @@ function formatApr(value: number) {
 }
 
 async function resolveENS(name: string) {
-  const apis = [
-    `https://api.ensideas.com/ens/resolve/${encodeURIComponent(name)}`,
-    `https://ensdata.net/${encodeURIComponent(name)}`,
-  ]
+  try {
+    const address = await getEnsAddress(mainnetClient, {
+      name: normalize(name),
+    })
 
-  for (const url of apis) {
-    try {
-      const response = await fetch(url)
-      if (!response.ok) continue
-
-      const payload = (await response.json()) as {
-        address?: string
-        resolvedAddress?: string
-        addr?: string
-      }
-      const address = payload.address || payload.resolvedAddress || payload.addr
-
-      if (address && ADDRESS_RE.test(address)) {
-        return address
-      }
-    } catch {
-      // Try the next public resolver.
+    if (address && ADDRESS_RE.test(address)) {
+      return address
     }
+  } catch {
+    // Fall through to the shared user-facing message below.
   }
 
   throw new Error(
