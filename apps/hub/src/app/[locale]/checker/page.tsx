@@ -4,12 +4,10 @@ import { useEffect, useMemo, useState } from 'react'
 
 import { Button } from '@status-im/status-network/components'
 import Image from 'next/image'
-import { createPublicClient, fallback, http } from 'viem'
 import { mainnet } from 'viem/chains'
-import { getEnsAddress, normalize } from 'viem/ens'
+import { usePublicClient } from 'wagmi'
 
 import { HubLayout } from '../../_components/hub-layout'
-import { clientEnv } from '../../_constants/env.client.mjs'
 import airdropData from '../../_data/airdrop.json'
 
 type AirdropRecord = {
@@ -67,16 +65,6 @@ const ethFormatter = new Intl.NumberFormat('en-US', {
   maximumFractionDigits: 6,
 })
 
-const mainnetClient = createPublicClient({
-  chain: mainnet,
-  transport: fallback([
-    http(
-      `${clientEnv.NEXT_PUBLIC_STATUS_API_URL}/api/trpc/rpc.proxy?chainId=${mainnet.id}`
-    ),
-    http('https://eth.merkle.io'),
-  ]),
-})
-
 function shortAddress(address: string) {
   return `${address.slice(0, 6)}...${address.slice(-4)}`
 }
@@ -89,17 +77,19 @@ function formatApr(value: number) {
   return `${Number(value || 0).toFixed(2)}%`
 }
 
-async function resolveENS(name: string) {
-  try {
-    const address = await getEnsAddress(mainnetClient, {
-      name: normalize(name),
-    })
+async function resolveENS(
+  name: string,
+  resolveViaRpc: (() => Promise<string | null>) | undefined
+) {
+  if (!resolveViaRpc) {
+    throw new Error(
+      `Could not resolve ENS name "${name}". Try pasting the 0x address directly.`
+    )
+  }
 
-    if (address && ADDRESS_RE.test(address)) {
-      return address
-    }
-  } catch {
-    // Fall through to the shared user-facing message below.
+  const resolvedAddress = await resolveViaRpc()
+  if (resolvedAddress && ADDRESS_RE.test(resolvedAddress)) {
+    return resolvedAddress
   }
 
   throw new Error(
@@ -170,6 +160,7 @@ function MethodCard({
 }
 
 export default function CheckerPage() {
+  const publicClient = usePublicClient({ chainId: mainnet.id })
   const [input, setInput] = useState('')
   const [status, setStatus] = useState(
     'Enter a wallet address or ENS to check the allocation.'
@@ -214,7 +205,17 @@ export default function CheckerPage() {
       setStatus(`Resolving ${normalizedInput}...`)
 
       try {
-        lookupAddress = (await resolveENS(normalizedInput)).toLowerCase()
+        lookupAddress = (
+          await resolveENS(normalizedInput, async () => {
+            if (!publicClient) return null
+
+            const resolvedAddress = await publicClient.getEnsAddress({
+              name: normalizedInput,
+            })
+
+            return resolvedAddress ?? null
+          })
+        ).toLowerCase()
       } catch (error) {
         setRecord(null)
         setEmptyVisible(false)
@@ -275,7 +276,7 @@ export default function CheckerPage() {
     }
     // records is stable for the static dataset.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [])
+  }, [publicClient])
 
   return (
     <HubLayout>
